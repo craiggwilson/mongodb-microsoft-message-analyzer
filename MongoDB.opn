@@ -1,0 +1,240 @@
+protocol MongoDB with 
+BinaryEncodingDefaults{Endian = Endian.Little, TextEncoding = TextEncoding.UTF8},
+Documentation
+{
+    ProtocolName = "MongoDB Wire Protocol",
+    ShortName = "MongoDB",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) MongoDB",
+    References = 
+        [
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0.0", Date = "03/16/2015"}
+        ]
+};
+
+using BSON;
+using Standard;
+using Utility;
+using ReassembledTCP;
+
+annotation bool MongoDB.Message#IsRequest;
+annotation ushort MongoDB.Message#SourcePort;
+annotation ushort MongoDB.Message#DestinationPort;
+
+endpoint Server 
+    over ReassembledTCP.Server
+    accepts mutable MongoDB.Message issues mutable MongoDB.Message;
+
+client endpoint Client connected to Server;
+
+autostart actor MongoDBOverTCP(ReassembledTCP.Server server)
+{
+	process server accepts s:ReassembledTCP.VirtualDataSegment where s.DestinationPort == 27017
+	{
+		switch(s.Payload)
+		{
+			case m:Message from BinaryDecoder<Message> =>
+				m#IsRequest = true;
+				m#SourcePort = s.SourcePort;
+				dispatch (endpoint MongoDB.Server over server) accepts m;
+			default =>
+				ThrowDecodingException("MongoDB", "Message", PrepareTCPRootCauseString(s#IsIncomplete, s#SegmentLost), []);
+		}
+	}
+
+	process server issues s:ReassembledTCP.VirtualDataSegment where s.SourcePort == 27017
+	{
+		switch(s.Payload)
+		{
+			case m:Message from BinaryDecoder<Message> =>
+				m#IsRequest = false;
+				m#DestinationPort = s.DestinationPort;
+				dispatch (endpoint MongoDB.Server over server) issues m;
+			default =>
+				ThrowDecodingException("MongoDB", "Message", PrepareTCPRootCauseString(s#IsIncomplete, s#SegmentLost), []);
+		}
+	}
+}
+
+message Message
+{
+	int MessageLength;
+	int RequestID;
+	int ResponseTo;
+	MsgBody Body;
+
+	override string ToString()
+	{
+		string summary = "";
+		if(this#IsRequest != nothing && this#IsRequest as bool)
+		{
+			summary += "RequestID:" + RequestID.ToString() + ", Length: " + MessageLength.ToString();
+		}
+		else
+		{
+			summary += "ResponseTo: " + ResponseTo.ToString() + ", Length: " + MessageLength.ToString();
+		}
+
+		switch(Body)
+		{
+			case b:OpReplyMsgBody =>
+				summary = "OpCode: OP_REPLY, " + summary + ", CursorID: " + b.CursorID.ToString() + ", NumberReturned: " + b.NumberReturned.ToString();
+			case b:OpMsgMsgBody => 
+				summary = "OpCode: OP_MSG, " + summary + ", Message: " + b.Message.ToString();
+			case b:OpUpdateMsgBody => 
+				summary = "OpCode: OP_UPDATE, " + summary + ", FullCollectionName: " + b.FullCollectionName.ToString();
+			case b:OpInsertMsgBody => 
+				summary = "OpCode: OP_INSERT, " + summary + ", FullCollectionName: " + b.FullCollectionName.ToString() + ", NumberOfDocuments: " + b.Documents.Count.ToString();
+			case b:OpQueryMsgBody => 
+				summary = "OpCode: OP_QUERY, " + summary + ", FullCollectionName: " + b.FullCollectionName.ToString();
+			case b:OpGetMoreMsgBody => 
+				summary = "OpCode: OP_QUERY, " + summary + ", FullCollectionName: " + b.FullCollectionName.ToString() + ", CursorID: " + b.CursorID.ToString();
+			case b:OpDeleteMsgBody => 
+				summary = "OpCode: OP_DELETE, " + summary + ", FullCollectionName: " + b.FullCollectionName.ToString();
+			case b:OpKillCursorsMsgBody => 
+				summary = "OpCode: OP_KILL_CURSORS, " + summary;
+		}
+
+		return summary;
+	}
+}
+
+pattern OpCodeType = enum int
+{
+	OP_REPLY = 1, 
+	OP_MSG = 1000, 
+	OP_UPDATE = 2001, 
+	OP_INSERT = 2002, 
+	OP_QUERY = 2004, 
+	OP_GET_MORE = 2005,
+	OP_DELETE = 2006,
+	OP_KILL_CURSORS = 2007,
+	...
+};
+
+pattern MsgBody = OpReplyMsgBody 
+	| OpMsgMsgBody
+	| OpUpdateMsgBody
+	| OpInsertMsgBody
+	| OpQueryMsgBody
+	| OpGetMoreMsgBody
+	| OpDeleteMsgBody
+	| OpKillCursorsMsgBody;
+
+type OpReplyMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_REPLY) OpCode;
+	ResponseFlags ResponseFlags;
+	long CursorID;
+	int StartingFrom;
+	int NumberReturned;
+
+	optional array<Document> Documents;
+}
+
+pattern ResponseFlags = flags int
+{
+	CursorNotFound = 0x01,
+	QueryFailure = 0x02, 
+	ShardConfigStale = 0x04, 
+	AwaitCapable = 0x08,
+	...
+};
+
+type OpMsgMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_MSG) OpCode;
+	CString Message;
+}
+
+type OpUpdateMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_UPDATE) OpCode;
+	int Zero;
+	CString FullCollectionName;
+	UpdateFlags Flags;
+	Document Selector;
+	Document Update;
+}
+
+pattern UpdateFlags = flags int
+{
+	Upsert = 0x01,
+	MultiUpdate = 0x10,
+	...
+};
+
+type OpInsertMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_INSERT) OpCode;
+	InsertFlags Flags;
+	CString FullCollectionName;
+	array<Document> Documents;
+}
+
+pattern InsertFlags = flags int
+{
+	ContinueOnError = 0x01
+};
+
+type OpQueryMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_QUERY) OpCode;
+	QueryFlags Flags;
+	CString FullCollectionName;
+	int NumberToSkip;
+	int NumberToReturn;
+
+	Document Query;
+	optional Document ReturnFieldsSelector;
+}
+
+pattern QueryFlags = flags int
+{
+	TailableCursor = 0x02,
+	SlaveOk = 0x04,
+	OplogReply = 0x08,
+	NoCursorTimeout = 0x10,
+	AwaitData = 0x20,
+	Exhaust = 0x40,
+	Partial = 0x80,
+	...
+};
+
+type OpGetMoreMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_GET_MORE) OpCode;
+	int Zero;
+	CString FullCollectionName;
+	int NumberToReturn;
+	long CursorID;
+}
+
+type OpDeleteMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_DELETE) OpCode;
+	int Zero;
+	CString FullCollectionName;
+	DeleteFlags Flags;
+	Document Selector;
+}
+
+pattern DeleteFlags = flags int
+{
+	SingleRemove = 0x01,
+	...
+};
+
+type OpKillCursorsMsgBody
+{
+	(OpCodeType where value == OpCodeType.OP_KILL_CURSORS) OpCode;
+	int Zero;
+	int NumberOfCursorIDs;
+	array<long> CursorIDs with BinaryEncoding{Length=NumberOfCursorIDs};
+}

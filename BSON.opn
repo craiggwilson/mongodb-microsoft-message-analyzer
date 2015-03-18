@@ -1,0 +1,387 @@
+protocol BSON with 
+BinaryEncodingDefaults{Endian = Endian.Little, TextEncoding = TextEncoding.UTF8},
+Documentation
+{
+    ProtocolName = "Binary JSON",
+    ShortName = "BSON",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) MongoDB",
+    References = 
+        [
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0.0", Date = "03/16/2015"}
+        ]
+};
+
+using Utility;
+
+type CString 
+{
+	string Value;
+
+	override string ToString()
+	{
+		return Value;
+	}
+}
+
+pattern BsonType = enum byte
+{
+	Double = 0x01,
+	String = 0x02,
+	Document = 0x03,
+	Array = 0x04,
+	Binary = 0x05,
+	Undefined = 0x06,
+	ObjectID = 0x07,
+	Boolean = 0x08,
+	UTCDateTime = 0x09,
+	Null = 0x0A,
+	Regex = 0x0B,
+	DBPointer = 0x0C,
+	JavascriptCode = 0x0D,
+	Deprecated = 0x0E,
+	JavascriptCodeWithScope = 0x0F,
+	Int32 = 0x10,
+	Timestamp = 0x11,
+	Int64 = 0x12,
+	MinKey = 0xFF,
+	MaxKey = 0x7F
+};
+
+pattern BsonBinarySubtype = enum byte
+{
+	Generic = 0x00,
+	Function = 0x01,
+	BinaryOld = 0x02,
+	UUIDOld = 0x03,
+	UUID = 0x04,
+	MD5 = 0x05,
+	UserDefined = 0x80
+};
+
+pattern Element = DoubleElement 
+	| StringElement
+	| DocumentElement
+	| ArrayElement
+	| BinaryElement
+	| UndefinedElement
+	| ObjectIDElement
+	| BooleanElement
+	| UTCDateTimeElement
+	| NullElement
+	| RegexElement
+	| DBPointerElement
+	| JavascriptCodeElement
+	| DeprecatedElement
+	| JavascriptCodeWithScopeElement
+	| Int32Element
+	| TimestampElement
+	| Int64Element
+	| MinKeyElement
+	| MaxKeyElement;
+
+
+type BoundedString
+{
+	int Length;
+	string Value with BinaryEncoding{Length = Length - 1, TrailPadding = 8};
+
+	override string ToString()
+	{
+		return Value;
+	}
+}
+
+type CodeWithScope
+{
+	int Length;
+	BoundedString Code;
+	Document Scope;
+
+	override string ToString()
+	{
+		return "CodeWithScope(" + Code.ToString() + ", " + Scope.ToString() + ")";
+	}
+}
+
+type ObjectID
+{
+	binary Value with BinaryEncoding{DecodeAsUnit = true, WidthForComposedType = 12 * 8};
+
+	override string ToString()
+	{
+		return "ObjectID(" + Value.ToString() + ")";
+	}
+}
+
+type Document
+{
+	int Length;
+	optional array<Element> EList with BinaryEncoding{DecodeAsUnit = true, WidthForComposedType = (Length - 5) * 8, TrailPadding = 8};
+
+	override string ToString()
+	{
+		string summary = "{ ";
+		if(EList != nothing)
+		{
+			array<Element> list = EList as array<Element>;
+			bool first = true;
+			foreach(Element e in list)
+			{
+				if(!first)
+				{
+					summary += ", ";
+				}
+				first = false;
+				summary += e.ToString();
+			}
+		}
+		summary += " }";
+		return summary;
+	}
+}
+
+type DoubleElement
+{
+	(BsonType where value == BsonType.Double) Type;
+	CString EName;
+	double Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type StringElement
+{
+	(BsonType where value == BsonType.String) Type;
+	CString EName;
+	BoundedString Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": \"" + Value.Value + "\"";
+	}
+}
+
+type DocumentElement
+{
+	(BsonType where value == BsonType.Document) Type;
+	CString EName;
+	Document Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type ArrayElement
+{
+	(BsonType where value == BsonType.Array) Type;
+	CString EName;
+	Document Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type BinaryElement
+{
+	(BsonType where value == BsonType.Binary) Type;
+	CString EName;
+	int Length;
+	binary Value with BinaryEncoding{DecodeAsUnit = true, WidthForComposedType = (Length - 4) * 8};
+
+	override string ToString()
+	{
+		return EName.Value + ": <binary>";
+	}
+}
+
+type UndefinedElement
+{
+	(BsonType where value == BsonType.Undefined) Type;
+	CString EName;
+
+	override string ToString()
+	{
+		return EName.Value + ": <undefined>";
+	}
+}
+
+type ObjectIDElement
+{
+	(BsonType where value == BsonType.ObjectID) Type;
+	CString EName;
+	ObjectID Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type BooleanElement
+{
+	(BsonType where value == BsonType.Boolean) Type;
+	CString EName;
+	bool Value with BinaryEncoding{Width=8};
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type UTCDateTimeElement
+{
+	(BsonType where value == BsonType.UTCDateTime) Type;
+	CString EName;
+	long Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": UTCDateTime(" + Value.ToString() + ")";
+	}
+}
+
+type NullElement
+{
+	(BsonType where value == BsonType.Null) Type;
+	CString EName;
+
+	override string ToString()
+	{
+		return EName.Value + ": null";
+	}
+}
+
+type RegexElement
+{
+	(BsonType where value == BsonType.Regex) Type;
+	CString EName;
+	CString Pattern;
+	CString Options;
+
+	override string ToString()
+	{
+		return EName.Value + ": /" + Pattern.Value.ToString() + "/" + Options.ToString();
+	}
+}
+
+type DBPointerElement
+{
+	(BsonType where value == BsonType.DBPointer) Type;
+	CString EName;
+	BoundedString FullCollectionName;
+	ObjectID ID;
+
+	override string ToString()
+	{
+		return EName.Value + ": DBPointer(" + FullCollectionName.Value + ")";
+	}
+}
+
+type JavascriptCodeElement
+{
+	(BsonType where value == BsonType.JavascriptCode) Type;
+	CString EName;
+	BoundedString Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type DeprecatedElement
+{
+	(BsonType where value == BsonType.Deprecated) Type;
+	CString EName;
+	BoundedString Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type JavascriptCodeWithScopeElement
+{
+	(BsonType where value == BsonType.JavascriptCodeWithScope) Type;
+	CString EName;
+	CodeWithScope Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type Int32Element
+{
+	(BsonType where value == BsonType.Int32) Type;
+	CString EName;
+	int Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type TimestampElement
+{
+	(BsonType where value == BsonType.Timestamp) Type;
+	CString EName;
+	long Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": Timestamp(" + Value.ToString() + ")";
+	}
+}
+
+type Int64Element
+{
+	(BsonType where value == BsonType.Int64) Type;
+	CString EName;
+	long Value;
+
+	override string ToString()
+	{
+		return EName.Value + ": " + Value.ToString();
+	}
+}
+
+type MinKeyElement
+{
+	(BsonType where value == BsonType.MinKey) Type;
+	CString EName;
+
+	override string ToString()
+	{
+		return EName.Value + ": MinKey";
+	}
+}
+
+type MaxKeyElement
+{
+	(BsonType where value == BsonType.MaxKey) Type;
+	CString EName;
+
+	override string ToString()
+	{
+		return EName.Value + ": MaxKey";
+	}
+}
