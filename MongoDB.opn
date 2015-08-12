@@ -21,45 +21,60 @@ OPNAuthoring
 using BSON;
 using Standard;
 using Utility;
-using ReassembledTCP;
+using TCP;
+using Configurations;
 
 annotation bool MongoDB.Message#IsRequest;
 annotation ushort MongoDB.Message#SourcePort;
 annotation ushort MongoDB.Message#DestinationPort;
 
 endpoint Server 
-    over ReassembledTCP.Server
-    accepts mutable MongoDB.Message issues mutable MongoDB.Message;
+    over TCP.Server
+    accepts MongoDB.Message issues MongoDB.Message;
 
 client endpoint Client connected to Server;
 
-autostart actor MongoDBOverTCP(ReassembledTCP.Server server)
+const set<ushort> DefaultPorts = {27017};
+
+type MongoDBConfiguration
 {
-	process server accepts s:ReassembledTCP.VirtualDataSegment where s.DestinationPort == 27017
+    set<ushort> MongoDBPorts = {} with Configurable {Description = "Add MongoDB ports (CSV delimited)"};
+} with Configurable{Category = "MongoDB"};
+
+autostart actor MongoDBOverTCP(TCP.Server server)
+{
+	MongoDBDecodingHelper mongoDBDecodingHelper;
+	MongoDBConfiguration config = GetConfigurableValue<MongoDBConfiguration>();
+
+	process server accepts s:TCP.Segment where (s.DestinationPort in DefaultPorts || s.DestinationPort in config.MongoDBPorts)
 	{
-		switch(s.Payload)
+		if (mongoDBDecodingHelper == null)
 		{
-			case m:Message from BinaryDecoder<Message> =>
-				m#IsRequest = true;
-				m#SourcePort = s.SourcePort;
-				dispatch (endpoint MongoDB.Server over server) accepts m;
-			default =>
-				ThrowDecodingException("MongoDB", "Message", PrepareTCPRootCauseString(s#IsIncomplete, s#SegmentLost), []);
+			mongoDBDecodingHelper = new MongoDBDecodingHelper();
+			mongoDBDecodingHelper.InitializeMongoDBDecodingHelper(server, s.DestinationPort, s.SourcePort);
 		}
+
+		mongoDBDecodingHelper.TryDecode(s, MessageDirection.Accepts);
 	}
 
-	process server issues s:ReassembledTCP.VirtualDataSegment where s.SourcePort == 27017
+	process server issues s:TCP.Segment where (s.SourcePort in DefaultPorts || s.SourcePort in config.MongoDBPorts)
 	{
-		switch(s.Payload)
+		if (mongoDBDecodingHelper == null)
 		{
-			case m:Message from BinaryDecoder<Message> =>
-				m#IsRequest = false;
-				m#DestinationPort = s.DestinationPort;
-				dispatch (endpoint MongoDB.Server over server) issues m;
-			default =>
-				ThrowDecodingException("MongoDB", "Message", PrepareTCPRootCauseString(s#IsIncomplete, s#SegmentLost), []);
+			mongoDBDecodingHelper = new MongoDBDecodingHelper();
+			mongoDBDecodingHelper.InitializeMongoDBDecodingHelper(server, s.SourcePort, s.DestinationPort);
 		}
+
+        mongoDBDecodingHelper.TryDecode(s, MessageDirection.Issues);
 	}
+
+	~endpoint(TCP.Server server)
+    {
+        if (mongoDBDecodingHelper != null)
+        {
+            mongoDBDecodingHelper.ClearInDestructor();
+        }
+    }
 }
 
 message Message
@@ -237,4 +252,70 @@ type OpKillCursorsMsgBody
 	int Zero;
 	int NumberOfCursorIDs;
 	array<long> CursorIDs with BinaryEncoding{Length=NumberOfCursorIDs};
+}
+
+
+// ---------------------------------- MongoDB Decoding ---------------------------------------
+optional Message MongoDBDecoder(binary buffer)
+{
+	switch(buffer)
+	{
+		case m:Message from BinaryDecoder<Message> =>
+			return m;
+		default =>
+			return nothing;
+	}
+}
+
+type MongoDBDecodingHelper : TCPDecodingHelper
+{
+	void InitializeMongoDBDecodingHelper(any endpoint server, ushort localPort, ushort remotePort)
+	{
+		MongoDBDecodingCache acceptsCache = new MongoDBDecodingCache();
+		MongoDBDecodingCache issuesCache = new MongoDBDecodingCache();
+
+		this.Initialize(acceptsCache, issuesCache,
+			"MongoDB", (endpoint MongoDB.Server over server),
+			(binary b) => true /*isCurrentProtocol*/,
+            (binary b) => 0 /*isSufficientForSingleMsg*/, 
+            (stream s) => nothing /*decodeSingleMessage*/,
+            (binary b) => nothing /*decodeIncompleteMessage*/);
+
+        acceptsCache.mongoDBDecodingHelper = this;
+        acceptsCache.localPort = localPort;
+        acceptsCache.remotePort = remotePort;
+
+        issuesCache.mongoDBDecodingHelper = this;
+        issuesCache.localPort = localPort;
+        acceptsCache.remotePort = remotePort;
+	}
+}
+
+type MongoDBDecodingCache : TCPDecodingCache
+{
+	MongoDBDecodingHelper mongoDBDecodingHelper = null;
+	ushort localPort;
+	ushort remotePort;
+
+	override void TryDecodeAndDispatchMessage()
+    {
+        assert Origins.Count > 0;
+        
+        switch (Buffer)
+        {
+            case m:Message from MongoDBDecoder =>
+                m#IsRequest = Direction == MessageDirection.Accepts ? true : false;
+                m#DestinationPort = Direction == MessageDirection.Accepts ? remotePort : localPort;
+                m#SourcePort = Direction == MessageDirection.Accepts ? localPort : remotePort;
+                
+                m.Origins = Origins;
+                DispatchMessage(m);
+                CompleteMessages.Add(m, BufferStartSequenceNumber, BufferEndSequenceNumber);
+                ResetAfterSucceed(null);
+            default =>
+                // actually, MongoDB Message will not decoding failed
+                return;
+        }
+    }
+
 }
